@@ -33,6 +33,7 @@ typedef struct {
     unsigned int rec_off;
 } TraceBufferRecord;
 
+#define MAX_TRACE_STRLEN 255
 /**
  * Initialize a trace record and claim space for it in the buffer
  *

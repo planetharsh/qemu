@@ -75,7 +75,11 @@ typedef struct {
 
 static void read_from_buffer(unsigned int idx, void *dataptr, size_t size);
 static unsigned int write_to_buffer(unsigned int idx, void *dataptr, size_t size);
+static int invalid_rec_found(void);
 
+static int invalid_rec_found(void){
+    return 1;
+}
 /**
  * Read a trace record from the trace buffer
  *
@@ -87,7 +91,7 @@ static unsigned int write_to_buffer(unsigned int idx, void *dataptr, size_t size
 static bool get_trace_record(unsigned int idx, TraceRecord **recordptr)
 {
     uint8_t rec_hdr[sizeof(TraceRecord)];
-    uint64_t event_flag = 0;
+    uint64_t event_flag = 0, event_tmp;
     TraceRecord *record = (TraceRecord *) rec_hdr;
     /* read the event flag to see if its a valid record */
     read_from_buffer(idx, rec_hdr, sizeof(event_flag));
@@ -99,10 +103,16 @@ static bool get_trace_record(unsigned int idx, TraceRecord **recordptr)
     __sync_synchronize(); /* read memory barrier before accessing record */
     /* read the record header to know record length */
     read_from_buffer(idx, rec_hdr, sizeof(TraceRecord));
+    /* debug code start */
+    event_tmp = record->event;
+    event_tmp &= ~TRACE_RECORD_VALID;
+    if (event_tmp >= NR_TRACE_EVENTS)
+        event_tmp = invalid_rec_found();
+    /* debug code end */
     *recordptr = g_malloc(record->length);
     /* make a copy of record to avoid being overwritten */
     read_from_buffer(idx, (uint8_t *)*recordptr, record->length);
-    __sync_synchronize(); /* memory barrier before clearing valid flag */
+    smp_rmb(); /* memory barrier before clearing valid flag */
     (*recordptr)->event &= ~TRACE_RECORD_VALID;
     /* reset record event validity flag on global trace buffer */
     write_to_buffer(idx, &event_flag, sizeof(event_flag));
@@ -161,6 +171,7 @@ static gpointer writeout_thread(gpointer opaque)
             dropped_ptr->reserved = 0;
             while (1) {
                 dropped_count = dropped_events;
+                smp_rmb();
                 if (g_atomic_int_compare_and_exchange((gint *)&dropped_events,
                                                       dropped_count, 0)) {
                     break;
@@ -174,13 +185,8 @@ static gpointer writeout_thread(gpointer opaque)
             unused = fwrite(recordptr, recordptr->length, 1, trace_fp);
             writeout_idx += recordptr->length;
             g_free(recordptr);
+            idx = writeout_idx % TRACE_BUF_LEN;
         }
-        /* Note: The idx assignment expression below,
-         * if kept in while-loop above, results in tracelog
-         * corruption, possibly due to compiler-reordering of
-         * statements. Keeping it out of loop saves a memory barrier.
-         */
-        idx = writeout_idx % TRACE_BUF_LEN;
 
         fflush(trace_fp);
     }
@@ -195,7 +201,7 @@ void trace_record_write_u64(TraceBufferRecord *rec, uint64_t val)
 void trace_record_write_str(TraceBufferRecord *rec, const char *s)
 {
     /* Write string length first */
-    uint32_t slen = (s == NULL ? 0 : strlen(s));
+    uint32_t slen = ((s == NULL ? 0 : strlen(s)) % MAX_TRACE_STRLEN);
     rec->rec_off = write_to_buffer(rec->rec_off, (uint8_t *)&slen, sizeof(slen));
     /* Write actual string now */
     rec->rec_off = write_to_buffer(rec->rec_off, (uint8_t *)s, slen);

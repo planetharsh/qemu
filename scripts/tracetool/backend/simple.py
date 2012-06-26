@@ -40,7 +40,7 @@ def c(events):
         sizes = []
         for type_, name in event.args:
             if is_string(type_):
-                sizes.append("4 + (" + name + " ? strlen(" + name + ") : 0)")
+                sizes.append("4 + ((" + name + " ? strlen(" + name + ") : 0) % MAX_TRACE_STRLEN)")
             else:
                 sizes.append("8")
         sizestr = " + ".join(sizes)
